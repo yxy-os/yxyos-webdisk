@@ -1,39 +1,112 @@
-# yxyos-files
+# 云溪起源网盘
 
-#### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
+一个轻量级的文件服务器，使用 Rust + Actix-web 开发。
 
-#### 软件架构
-软件架构说明
+## 特性
 
+- 🚀 高性能：使用 Rust 语言开发，性能优异
+- 📁 文件浏览：支持目录浏览和文件下载
+- 🖼️ 文件预览：支持图片、视频、音频等文件在线预览
+- 💡 智能图标：根据文件类型显示不同图标
+- 📱 响应式设计：支持移动端访问
+- 🔧 简单配置：通过 YAML 文件轻松配置
+- 🗜️ 压缩传输：支持 HTTP 压缩
 
-#### 安装教程
+## 快速开始
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+### 下载和运行
 
-#### 使用说明
+1. 从 Release 页面下载对应平台的可执行文件
+2. 运行程序：
+   ```bash
+   ./yunxi-webdisk
+   ```
+3. 访问 `http://localhost:8080` 即可使用
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+### 配置说明
 
-#### 参与贡献
+首次运行时会在 `data` 目录下自动创建 `config.yaml` 配置文件：
 
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+```yaml
+# 云溪起源网盘配置文件
+ip: "0.0.0.0"    # 监听的 IP 地址
+port: 8080       # 监听的端口
+cwd: "data/www"  # 文件存储目录
+```
 
+### 命令行参数
 
-#### 特技
+- `-v` 或 `--version`: 显示版本信息
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+## 支持的文件预览
+
+### 图片格式
+- jpg, jpeg
+- png
+- gif
+- webp
+- svg
+
+### 视频格式
+- mp4
+- webm
+- mkv
+
+### 音频格式
+- mp3
+- wav
+- ogg
+- flac
+
+### 文档格式
+- pdf
+- txt
+- md
+
+## 开发相关
+
+### 环境要求
+
+- Rust 1.70+
+- Cargo
+
+### 构建
+
+```bash
+cargo build --release
+```
+
+### 运行开发版本
+
+```bash
+cargo run
+```
+
+### 目录结构
+
+```
+.
+├── src/            # 源代码目录
+└── data/           # 数据目录
+    ├── www/       # 文件存储目录
+    └── config.yaml # 配置文件
+```
+
+## 技术栈
+
+- 后端：Rust + Actix-web
+- 前端：HTML + CSS + JavaScript
+- 存储：本地文件系统
+- 配置：YAML
+
+## 作者
+
+云溪起源团队
+
+## 反馈与贡献
+
+- 提交问题：请使用 GitHub Issues
+- 贡献代码：欢迎提交 Pull Request
+- 功能建议：可以在 Discussions 中讨论
+
+©2025 云溪起源。保留所有权利。
