@@ -30,6 +30,3 @@ tokio-stream = { version = "0.1", features = ["fs"] }
 opt-level = "z"
 debug = false
 strip = true
-
-[build-dependencies]
-openssl-src = "300"
