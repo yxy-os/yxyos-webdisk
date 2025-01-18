@@ -1,9 +1,9 @@
 [package]
-name = "yxyos-files"
-version = "1.0.0"
+name = "yunxi-webdisk"
+version = "1.0.1"
 edition = "2021"
-authors = ["yxyos"]  # 修改为数组格式
-description = "云溪起源制作的简易网盘程序"
+authors = ["唐溪"]  # 修改为数组格式
+description = "@云溪起源 制作的简易网盘程序"
 
 [profile.release]
 opt-level = 3
