@@ -500,7 +500,7 @@ async fn main() -> std::io::Result<()> {
     println!("- 地址: http://{}", bind_addr);
     println!("- 目录: {}\n", config.cwd);
     
-    println!("服务器启动中...");
+    println!("服务启动中...");
     
     HttpServer::new(move || {
         App::new()
