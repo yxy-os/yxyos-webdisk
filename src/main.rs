@@ -404,17 +404,6 @@ const TEMPLATE: &str = r#"
 </head>
 <body>
     <h1>目录: /{{current_path}}</h1>
-    {% if current_path != "" %}
-    <div class="entry">
-        <div class="name-column">
-            <a href="../"><span class="file-icon">📂</span>返回上级目录</a>
-        </div>
-        <div class="info-group">
-            <div class="size-column"></div>
-            <div class="date-column"></div>
-        </div>
-    </div>
-    {% endif %}
     {% for entry in entries %}
     <div class="entry">
         <div class="name-column">

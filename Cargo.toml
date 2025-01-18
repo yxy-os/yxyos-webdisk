@@ -1,6 +1,6 @@
 [package]
 name = "yunxi-webdisk"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["唐溪"]  # 修改为数组格式
 description = "@云溪起源 制作的简易网盘程序"
