@@ -31,6 +31,5 @@ opt-level = "z"
 debug = false
 strip = true
 
-[dependencies.openssl]
-version = "0.10"
-features = ["vendored"]
+[build-dependencies]
+openssl-src = "300"

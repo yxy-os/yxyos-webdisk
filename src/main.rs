@@ -144,9 +144,9 @@ async fn get_directory_entries(path: &Path) -> Vec<FileEntry> {
                     size_string,
                     modified_time: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
                     is_dir,
-                    icon: get_file_icon(&name).to_string(),  // 使用 get_file_icon 函数
-                    preview_url: if is_previewable(&name) {  // 使用 is_previewable 函数
-                        format!("/preview/{}", name)
+                    icon: get_file_icon(&name).to_string(),
+                    preview_url: if is_previewable(&name) {
+                        format!("./{}", name)
                     } else {
                         String::new()
                     },
@@ -265,7 +265,8 @@ const TEMPLATE: &str = r#"
             min-width: 0;
             overflow: visible;
             text-overflow: ellipsis;
-            white-space: nowrap;
+            white-space: normal;
+            word-break: break-all;
         }
         .size-column {
             flex: 0.8;
@@ -280,28 +281,33 @@ const TEMPLATE: &str = r#"
         }
         .preview-container {
             display: none;
-            margin: 10px 0;
-            text-align: left;
+            margin: 8px 0 8px 32px;
+            vertical-align: middle;
         }
-        .preview-container img,
+        .preview-container img {
+            max-width: 160px;
+            max-height: 90px;
+            object-fit: contain;
+            border-radius: 4px;
+            display: block;
+        }
         .preview-container video {
             max-width: 160px;
             max-height: 90px;
             object-fit: contain;
             border-radius: 4px;
-            margin-left: 32px;
             display: block;
         }
         .preview-container audio {
-            width: 160px;
-            margin-left: 32px;
+            width: 320px;
+            height: 32px;
             display: block;
         }
         .file-icon {
             margin-right: 8px;
             font-size: 1.2em;
             display: inline-block;
-            width: 24px;
+            width: 32px;
             text-align: center;
         }
         .download-btn {
@@ -328,30 +334,6 @@ const TEMPLATE: &str = r#"
             min-width: 50px;
             text-align: center;
             white-space: nowrap;
-        }
-        .preview-modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.8);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-            cursor: pointer;
-        }
-        .preview-content {
-            max-width: 90%;
-            max-height: 90%;
-            cursor: default;
-        }
-        .preview-content img,
-        .preview-content video {
-            max-width: 100%;
-            max-height: 90vh;
-            object-fit: contain;
         }
         .footer {
             position: fixed;
@@ -441,7 +423,7 @@ const TEMPLATE: &str = r#"
             {% else %}
             <a href="./{{entry.name}}">
                 <span class="file-icon" id="icon-{{entry.name}}">{{entry.icon}}</span>
-                <div class="preview-container" id="preview-{{entry.name}}"></div>
+                <span class="preview-container" id="preview-{{entry.name}}"></span>
                 {{entry.display_name}}
             </a>
             {% endif %}
@@ -475,7 +457,7 @@ const TEMPLATE: &str = r#"
         
         if (previewContainer.style.display === 'block') {
             previewContainer.style.display = 'none';
-            icon.style.display = 'inline';
+            icon.style.display = 'inline-block';
             previewContainer.innerHTML = '';
             return;
         }
@@ -486,7 +468,7 @@ const TEMPLATE: &str = r#"
         if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
             previewContainer.innerHTML = `<img src="${url}" alt="${name}">`;
         } else if (['mp4', 'webm'].includes(ext)) {
-            previewContainer.innerHTML = `<video src="${url}" controls style="width: 160px; height: 90px;"></video>`;
+            previewContainer.innerHTML = `<video src="${url}" controls></video>`;
         } else if (['mp3', 'wav', 'ogg'].includes(ext)) {
             previewContainer.innerHTML = `<audio src="${url}" controls></audio>`;
         }
