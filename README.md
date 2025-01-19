@@ -1,7 +1,7 @@
 # 云溪起源网盘
 
-Gitee: [https://gitee.com/yxyos/yxyos-files](https://gitee.com/yxyos/yxyos-files)
-Github: [https://github.com/yxyos/yxy-os-files](https://github.com/yxy-os/yxyos-files)
+> Gitee: [https://gitee.com/yxyos/yxyos-files](https://gitee.com/yxyos/yxyos-files)<br>
+> Github: [https://github.com/yxyos/yxy-os-files](https://github.com/yxy-os/yxyos-files)
 
 一个轻量级的文件服务器，使用 Rust + Actix-web 开发。
 
