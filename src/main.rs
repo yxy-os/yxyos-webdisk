@@ -7,10 +7,16 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use percent_encoding::percent_decode_str;
 use chrono::{DateTime, Local};
+use std::process::Command;
+use std::fs::OpenOptions;
+
+#[cfg(target_family = "unix")]
+use std::io::Write;  // 只在 Unix 系统上导入
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Config {
     ip: String,
+    ipv6: String,  // 添加 IPv6 地址字段
     port: u16,
     cwd: String,
 }
@@ -36,14 +42,43 @@ impl Config {
         }
 
         if !config_path.exists() {
-            let default_config = r#"# 云溪起源网盘配置文件
-ip: "0.0.0.0"    # 监听的 IP 地址
-port: 8080       # 监听的端口
-cwd: "data/www"  # 文件存储目录"#;
-            fs::write(&config_path, default_config)?;
+            Self::create_default_config()?;
         }
         
         let config_str = fs::read_to_string(&config_path)?;
+        let config: Self = serde_yaml::from_str(&config_str)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        
+        let cwd_path = Path::new(&config.cwd);
+        if !cwd_path.exists() {
+            fs::create_dir_all(cwd_path)?;
+        }
+        
+        Ok(config)
+    }
+
+    // 添加创建默认配置的函数
+    fn create_default_config() -> std::io::Result<()> {
+        let default_config = r#"# 云溪起源网盘配置文件
+ip: "0.0.0.0"     # IPv4 监听地址
+ipv6: "::"        # IPv6 监听地址
+port: 8080        # 监听的端口
+cwd: "data/www"   # 文件存储目录"#;
+        fs::write("data/config.yaml", default_config)?;
+        println!("已创建默认配置文件");
+        Ok(())
+    }
+
+    // 添加从指定路径加载配置的方法
+    fn load_from(config_path: &Path) -> std::io::Result<Self> {
+        if !config_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                ConfigError("指定的配置文件不存在".to_string())
+            ));
+        }
+        
+        let config_str = fs::read_to_string(config_path)?;
         let config: Self = serde_yaml::from_str(&config_str)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         
@@ -477,41 +512,463 @@ fn print_version() {
     println!("描述: {}", DESCRIPTION);
 }
 
+fn print_help() {
+    println!("云溪起源网盘 v{}", VERSION);
+    println!("用法: yunxi-webdisk [选项]");
+    println!("\n选项:");
+    println!("  --host ip <地址>       设置IPv4监听地址");
+    println!("  --host ipv6 <地址>     设置IPv6监听地址");
+    println!("  --host port <端口>     设置监听端口");
+    println!("  --host cwd <目录>      设置文件存储目录");
+    println!("  --config <文件路径>    使用指定的配置文件");
+    println!("  --config default       重建默认配置文件");
+    println!("  start                  后台启动服务");
+    println!("  stop                   停止服务");
+    println!("  -h, --help            显示帮助信息");
+    println!("  -v, --version         显示版本信息");
+}
+
+// 修改错误类型
+#[derive(Debug)]
+struct ConfigError(String);
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+fn is_valid_ip(value: &str) -> bool {
+    if !value.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return false;
+    }
+    let parts: Vec<&str> = value.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    parts.iter().all(|part| part.parse::<u8>().is_ok())  // 直接检查解析结果
+}
+
+fn is_valid_domain(value: &str) -> bool {
+    // 简单的域名验证规则
+    if value.is_empty() || value.len() > 253 {
+        return false;
+    }
+    
+    // 只允许字母、数字、点和连字符
+    if !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return false;
+    }
+    
+    // 不能以点或连字符开始或结束
+    if value.starts_with('.') || value.starts_with('-') || 
+       value.ends_with('.') || value.ends_with('-') {
+        return false;
+    }
+    
+    // 检查每个部分
+    let parts: Vec<&str> = value.split('.').collect();
+    if parts.len() < 2 {  // 至少需要有一个顶级域名
+        return false;
+    }
+    
+    // 检查每个部分的长度和格式
+    parts.iter().all(|part| {
+        !part.is_empty() && part.len() <= 63 && 
+        !part.starts_with('-') && !part.ends_with('-')
+    })
+}
+
+fn is_valid_ipv6(value: &str) -> bool {
+    // 特殊情况处理
+    if value == "::" || value == "::1" {
+        return true;
+    }
+    
+    // 检查基本格式
+    if !value.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
+        return false;
+    }
+    
+    let parts: Vec<&str> = value.split(':').collect();
+    
+    // IPv6 地址最多可以有 8 个部分
+    // 如果有 :: 缩写，parts 的长度可能小于 8
+    if parts.len() > 8 {
+        return false;
+    }
+    
+    // 检查每个部分
+    let mut has_empty = false;
+    for part in parts {
+        if part.is_empty() {
+            if has_empty {
+                // 只允许一个 :: 缩写
+                return false;
+            }
+            has_empty = true;
+            continue;
+        }
+        
+        // 每个部分最多 4 个十六进制数字
+        if part.len() > 4 {
+            return false;
+        }
+        
+        // 检查是否都是有效的十六进制数字
+        if !part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
+    
+    true
+}
+
+fn update_config(key: &str, value: &str) -> std::io::Result<()> {
+    let config_path = Path::new("data/config.yaml");
+    let config_str = fs::read_to_string(&config_path)?;
+    let mut config: serde_yaml::Value = serde_yaml::from_str(&config_str)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    match key {
+        "ip" => {
+            if !is_valid_ip(value) && !is_valid_domain(value) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    ConfigError("必须是有效的IPv4地址（如 127.0.0.1）或域名（如 example.com）".to_string())
+                ));
+            }
+            config["ip"] = serde_yaml::Value::String(value.to_string());
+        }
+        "ipv6" => {
+            if value == "no" {
+                config["ipv6"] = serde_yaml::Value::String("".to_string());
+            } else if !is_valid_ipv6(value) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    ConfigError("必须是有效的IPv6地址（如 ::1 或 2001:db8::1）或 'no' 以禁用 IPv6".to_string())
+                ));
+            } else {
+                config["ipv6"] = serde_yaml::Value::String(value.to_string());
+            }
+        }
+        "port" => {
+            match value.parse::<u16>() {
+                Ok(port) if port > 0 => {
+                    config["port"] = serde_yaml::Value::Number(serde_yaml::Number::from(port));
+                }
+                _ => return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    ConfigError("端口必须是1-65535之间的数字".to_string())
+                ))
+            }
+        }
+        "cwd" => {
+            let path = Path::new(value);
+            if !path.is_absolute() && !value.starts_with("./") && !value.starts_with("../") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    ConfigError("路径必须是绝对路径或以 ./ 或 ../ 开头的相对路径".to_string())
+                ));
+            }
+            config["cwd"] = serde_yaml::Value::String(value.to_string());
+        }
+        _ => return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            ConfigError("无效的配置项，只能是 ip、port 或 cwd".to_string())
+        ))
+    }
+
+    let new_config = serde_yaml::to_string(&config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(&config_path, new_config)?;
+    println!("已更新配置: {} = {}", key, value);
+    Ok(())
+}
+
+fn write_pid() -> std::io::Result<()> {
+    let pid = std::process::id().to_string();
+    fs::write("data/yunxi-webdisk.pid", pid)?;
+    Ok(())
+}
+
+fn read_pid() -> std::io::Result<u32> {
+    let pid_str = fs::read_to_string("data/yunxi-webdisk.pid")?;
+    pid_str.trim().parse::<u32>()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid PID"))
+}
+
+#[cfg(target_family = "unix")]
+fn stop_process(pid: u32) -> std::io::Result<()> {
+    unsafe {
+        // 首先尝试优雅停止 (SIGTERM)
+        if libc::kill(pid as i32, libc::SIGTERM) == 0 {
+            // 等待最多3秒
+            for _ in 0..30 {
+                if libc::kill(pid as i32, 0) != 0 {
+                    // 进程已经停止
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // 如果进程还在运行，强制结束 (SIGKILL)
+            if libc::kill(pid as i32, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        } else {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_family = "windows")]
+fn stop_process(pid: u32) -> std::io::Result<()> {
+    Command::new("taskkill")
+        .args(&["/PID", &pid.to_string(), "/F"])
+        .output()?;
+    Ok(())
+}
+
+// 修改错误处理函数，使用引用而不是获取所有权
+fn format_error(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::AddrNotAvailable => {
+            "无法绑定到指定地址，请检查IP地址是否正确或端口是否被占用".to_string()
+        }
+        std::io::ErrorKind::AddrInUse => {
+            "端口已被占用".to_string()
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            "权限不足，请检查端口号是否小于1024或是否有管理员权限".to_string()
+        }
+        _ => {
+            format!("启动失败: {}", e)
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // 处理命令行参数，使用 print_version 函数
-    if let Some(arg) = env::args().nth(1) {
-        if arg == "-v" || arg == "--version" {
-            print_version();  // 使用 print_version 函数
-            return Ok(());
+    let args: Vec<String> = env::args().collect();
+    
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "-h" | "--help" => {
+                print_help();
+                return Ok(());
+            }
+            "-v" | "--version" => {
+                print_version();
+                return Ok(());
+            }
+            "--host" => {
+                if args.len() == 4 {
+                    if let Err(e) = update_config(&args[2], &args[3]) {
+                        eprintln!("{}", e.get_ref().unwrap().to_string());
+                        std::process::exit(1);
+                    }
+                    return Ok(());
+                } else {
+                    println!("无效的命令格式，使用 -h 或 --help 查看帮助");
+                    return Ok(());
+                }
+            }
+            "--config" => {
+                if args.len() == 3 {
+                    if args[2] == "default" {
+                        if Path::new("data/config.yaml").exists() {
+                            println!("警告: 配置文件已存在，将被覆盖");
+                            println!("按回车键继续，或 Ctrl+C 取消");
+                            let mut input = String::new();
+                            std::io::stdin().read_line(&mut input)?;
+                        }
+                        Config::create_default_config()?;
+                    } else {
+                        // 使用指定的配置文件
+                        let config_path = Path::new(&args[2]);
+                        match Config::load_from(config_path) {
+                            Ok(_) => {
+                                println!("已加载配置文件: {}", args[2]);
+                                // 将配置文件路径保存到环境变量中
+                                env::set_var("YUNXI_CONFIG", &args[2]);
+                            }
+                            Err(e) => {
+                                eprintln!("加载配置文件失败: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    return Ok(());
+                } else {
+                    println!("无效的命令格式，使用 -h 或 --help 查看帮助");
+                    return Ok(());
+                }
+            }
+            "start" => {
+                // 检查是否已经在运行
+                if let Ok(_) = read_pid() {
+                    println!("服务已经在运行中");
+                    return Ok(());
+                }
+
+                // 启动后台进程
+                let exe = env::current_exe()?;
+                Command::new(exe)
+                    .arg("run")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("data/yunxi-webdisk.log")?)
+                    .stderr(OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("data/yunxi-webdisk.log")?)
+                    .spawn()?;
+                println!("服务已在后台启动");
+                return Ok(());
+            }
+            "stop" => {
+                if let Ok(pid) = read_pid() {
+                    match stop_process(pid) {
+                        Ok(_) => {
+                            if let Err(e) = fs::remove_file("data/yunxi-webdisk.pid") {
+                                println!("警告: 无法删除PID文件: {}", e);
+                            }
+                            println!("服务已停止");
+                        }
+                        Err(e) => {
+                            println!("停止服务失败: {}", e);
+                            // 如果进程已经不存在，仍然删除PID文件
+                            #[cfg(target_family = "unix")]
+                            let process_not_exists = e.raw_os_error() == Some(libc::ESRCH);
+                            #[cfg(target_family = "windows")]
+                            let process_not_exists = e.kind() == std::io::ErrorKind::NotFound;
+
+                            if process_not_exists {
+                                if let Err(e) = fs::remove_file("data/yunxi-webdisk.pid") {
+                                    println!("警告: 无法删除PID文件: {}", e);
+                                }
+                                println!("进程已经不存在，已清理PID文件");
+                            }
+                        }
+                    }
+                } else {
+                    println!("服务未运行");
+                }
+                return Ok(());
+            }
+            "run" => {
+                // 内部命令，用于实际运行服务
+                write_pid()?;
+            }
+            _ => {
+                println!("未知命令，使用 -h 或 --help 查看帮助");
+                return Ok(());
+            }
         }
     }
 
-    let config = Config::load()?;
-    let bind_addr = format!("{}:{}", config.ip, config.port);
+    let config = if let Ok(config_path) = env::var("YUNXI_CONFIG") {
+        Config::load_from(Path::new(&config_path))?
+    } else {
+        Config::load()?
+    };
+
+    let bind_addr_v4 = format!("{}:{}", config.ip, config.port);
+    let bind_addr_v6 = if config.ipv6.starts_with('[') {
+        format!("{}:{}", config.ipv6, config.port)
+    } else {
+        format!("[{}]:{}", config.ipv6, config.port)
+    };
+    let has_ipv6 = !config.ipv6.is_empty();
     
-    // 使用所有常量显示启动信息
     println!("\n云溪起源网盘 v{}", VERSION);
     println!("作者: {}", AUTHORS);
     println!("描述: {}\n", DESCRIPTION);
     
     println!("系统信息:");
     println!("- PID: {}", std::process::id());
-    println!("- 地址: http://{}", bind_addr);
+    println!("- IPv4: http://{}", bind_addr_v4);
+    if has_ipv6 {
+        let display_ipv6 = if config.ipv6.starts_with('[') {
+            config.ipv6.to_string()
+        } else {
+            format!("[{}]", config.ipv6)
+        };
+        println!("- IPv6: http://{}:{}", display_ipv6, config.port);
+    }
     println!("- 目录: {}\n", config.cwd);
     
     println!("服务启动中...");
     
-    HttpServer::new(move || {
-        App::new()
-            .wrap(Compress::default())
-            .app_data(web::Data::new(config.clone()))
-            .service(index)
-    })
-    .workers(num_cpus::get())
-    .backlog(1024)
-    .keep_alive(Duration::from_secs(30))
-    .bind(&bind_addr)?
-    .run()
-    .await
+    let app_factory = {
+        let config = config.clone();
+        move || {
+            App::new()
+                .wrap(Compress::default())
+                .app_data(web::Data::new(config.clone()))
+                .service(index)
+        }
+    };
+    
+    // 创建基本的服务器配置
+    let make_server = || {
+        HttpServer::new(app_factory.clone())
+            .workers(num_cpus::get())
+            .backlog(1024)
+            .keep_alive(Duration::from_secs(30))
+    };
+
+    // 尝试绑定 IPv4
+    let server = match make_server().bind(&bind_addr_v4) {
+        Ok(ipv4_server) => {
+            if has_ipv6 {
+                let ipv6_bind = format!("{}:{}", config.ipv6, config.port);
+                match ipv4_server.bind(&ipv6_bind) {
+                    Ok(dual_server) => {
+                        println!("服务器启动成功");
+                        dual_server
+                    }
+                    Err(e) => {
+                        println!("服务器启动成功（仅 IPv4）");
+                        println!("IPv6 绑定失败: {}", format_error(&e));
+                        make_server().bind(&bind_addr_v4)?
+                    }
+                }
+            } else {
+                println!("服务器启动成功");
+                ipv4_server
+            }
+        }
+        Err(e) => {
+            eprintln!("IPv4 绑定失败: {}", format_error(&e));
+            if has_ipv6 {
+                let ipv6_bind = format!("{}:{}", config.ipv6, config.port);
+                match make_server().bind(&ipv6_bind) {
+                    Ok(ipv6_server) => {
+                        println!("服务器启动成功（仅 IPv6）");
+                        ipv6_server
+                    }
+                    Err(e2) => {
+                        eprintln!("IPv6 绑定失败: {}", format_error(&e2));
+                        return Err(e);
+                    }
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
+    // 启动服务器
+    if let Err(e) = server.run().await {
+        eprintln!("{}", format_error(&e));
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
