@@ -10,8 +10,9 @@ use chrono::{DateTime, Local};
 use std::process::Command;
 use std::fs::OpenOptions;
 
+// 在 Unix 系统上，Write trait 会在 stop_process 函数中被隐式使用
 #[cfg(target_family = "unix")]
-use std::io::Write;  // 只在 Unix 系统上导入
+use std::io::Write;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Config {
