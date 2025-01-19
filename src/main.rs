@@ -879,10 +879,10 @@ async fn main() -> std::io::Result<()> {
     };
 
     let bind_addr_v4 = format!("{}:{}", config.ip, config.port);
-    let bind_addr_v6 = if config.ipv6.starts_with('[') {
+    let ipv6_bind = if config.ipv6.starts_with('[') {
         format!("{}:{}", config.ipv6, config.port)
     } else {
-        format!("[{}]:{}", config.ipv6, config.port)
+        format!("{}:{}", config.ipv6, config.port)
     };
     let has_ipv6 = !config.ipv6.is_empty();
     
@@ -927,7 +927,6 @@ async fn main() -> std::io::Result<()> {
     let server = match make_server().bind(&bind_addr_v4) {
         Ok(ipv4_server) => {
             if has_ipv6 {
-                let ipv6_bind = format!("{}:{}", config.ipv6, config.port);
                 match ipv4_server.bind(&ipv6_bind) {
                     Ok(dual_server) => {
                         println!("服务器启动成功");
@@ -947,7 +946,6 @@ async fn main() -> std::io::Result<()> {
         Err(e) => {
             eprintln!("IPv4 绑定失败: {}", format_error(&e));
             if has_ipv6 {
-                let ipv6_bind = format!("{}:{}", config.ipv6, config.port);
                 match make_server().bind(&ipv6_bind) {
                     Ok(ipv6_server) => {
                         println!("服务器启动成功（仅 IPv6）");
