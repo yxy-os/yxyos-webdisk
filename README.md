@@ -22,7 +22,7 @@
 1. 从 Release 页面下载对应平台的可执行文件
 2. 运行程序：
    ```bash
-   ./yunxi-webdisk
+   ./webdisk
    ```
 3. 访问 `http://localhost:8080` 即可使用
 
