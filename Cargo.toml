@@ -1,5 +1,5 @@
 [package]
-name = "yunxi-webdisk"
+name = "webdisk"
 version = "1.0.3"
 edition = "2021"
 authors = ["唐溪"]
