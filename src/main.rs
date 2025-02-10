@@ -225,7 +225,20 @@ async fn get_directory_entries(path: &Path) -> Vec<FileEntry> {
             if let Ok(metadata) = entry.metadata() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 let size = metadata.len();
-                let is_dir = metadata.is_dir();
+                
+                // 检查是否为软链接
+                let is_symlink = metadata.file_type().is_symlink();
+                let is_dir = if is_symlink {
+                    // 如果是软链接，获取目标文件的元数据
+                    if let Ok(target_metadata) = fs::metadata(entry.path()) {
+                        target_metadata.is_dir()
+                    } else {
+                        false  // 如果无法获取目标元数据，当作普通文件处理
+                    }
+                } else {
+                    metadata.is_dir()
+                };
+
                 let size_string = if is_dir {
                     "目录".to_string()
                 } else {
@@ -237,12 +250,22 @@ async fn get_directory_entries(path: &Path) -> Vec<FileEntry> {
                 
                 let file_entry = FileEntry {
                     name: name.clone(),
-                    display_name: name.clone(),
+                    display_name: if is_symlink {
+                        format!("{} ", name)
+                    } else {
+                        name.clone()
+                    },
                     size_string,
                     modified_time: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
                     is_dir,
-                    icon: get_file_icon(&name).to_string(),
-                    preview_url: if is_previewable(&name) {
+                    icon: if is_dir {
+                        "📁".to_string()  // 文件夹图标
+                    } else if is_symlink {
+                        "🔗".to_string()  // 软链接图标
+                    } else {
+                        get_file_icon(&name).to_string()
+                    },
+                    preview_url: if is_previewable(&name) && !is_dir {
                         format!("./{}", name)
                     } else {
                         String::new()
@@ -271,7 +294,7 @@ async fn get_directory_entries(path: &Path) -> Vec<FileEntry> {
             size_string: "".to_string(),
             modified_time: "".to_string(),
             is_dir: true,
-            icon: "folder-up".to_string(),
+            icon: "📁".to_string(),
             preview_url: String::new(),
         });
     }
