@@ -1,6 +1,7 @@
 use actix_files::NamedFile;
-use actix_web::{get, App, HttpResponse, HttpServer, Result, web};
+use actix_web::{get, App, HttpResponse, HttpServer, Result, web, Error, HttpRequest};
 use actix_web::middleware::Compress;
+use actix_web::http::header;
 use serde::{Serialize, Deserialize};
 use std::{env, fs};
 use std::path::{Path, PathBuf};
@@ -9,13 +10,63 @@ use percent_encoding::percent_decode_str;
 use chrono::{DateTime, Local};
 use std::process::Command;
 use std::fs::OpenOptions;
+use std::collections::BTreeMap;
+use dav_server::DavHandler;
+use dav_server::localfs::LocalFs;
+use futures_util::StreamExt;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
+
+// 添加自定义序列化模块
+mod ordered_map {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S, K, V>(value: &BTreeMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        K: serde::Serialize + Ord,
+        V: serde::Serialize,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(value.len()))?;
+        for (k, v) in value {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+
+    pub fn deserialize<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        K: serde::Deserialize<'de> + Ord,
+        V: serde::Deserialize<'de>,
+    {
+        BTreeMap::deserialize(deserializer)
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Config {
     ip: String,
-    ipv6: String,  // 添加 IPv6 地址字段
+    ipv6: String,
     port: u16,
     cwd: String,
+    webdav: WebDAVConfig,  // 添加 WebDAV 配置
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WebDAVConfig {
+    enabled: bool,
+    #[serde(with = "ordered_map")]  // 使用自定义序列化
+    users: BTreeMap<String, UserConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UserConfig {
+    password: String,
+    permissions: String,  // "r" = read, "w" = write, "x" = execute
 }
 
 #[derive(Debug, Serialize)]
@@ -56,12 +107,26 @@ impl Config {
 
     // 添加创建默认配置的函数
     fn create_default_config() -> std::io::Result<()> {
-        let default_config = r#"# 云溪起源网盘配置文件
-ip: "0.0.0.0"     # IPv4 监听地址
-ipv6: "::"        # IPv6 监听地址
-port: 8080        # 监听的端口
-cwd: "data/www"   # 文件存储目录"#;
-        fs::write("data/config.yaml", default_config)?;
+        let mut users = BTreeMap::new();
+        users.insert("admin".to_string(), UserConfig {
+            password: "admin".to_string(),
+            permissions: "rwx".to_string(),
+        });
+
+        let config = Config {
+            ip: "0.0.0.0".to_string(),
+            ipv6: "::".to_string(),
+            port: 8080,
+            cwd: "data/www".to_string(),
+            webdav: WebDAVConfig {
+                enabled: false,
+                users,
+            },
+        };
+
+        let yaml_str = serde_yaml::to_string(&config)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        fs::write("data/config.yaml", yaml_str)?;
         println!("已创建默认配置文件");
         Ok(())
     }
@@ -244,6 +309,131 @@ async fn index(
                 .body(rendered))
         }
     }
+}
+
+// 修改 WebDAV 处理函数
+#[actix_web::route("/webdav/{tail:.*}", method="GET", method="HEAD", method="PUT", 
+                   method="DELETE", method="COPY", method="MOVE", method="MKCOL", 
+                   method="PROPFIND", method="PROPPATCH", method="LOCK", method="UNLOCK")]
+async fn webdav_handler(
+    req: HttpRequest,
+    mut payload: web::Payload,
+    config: web::Data<Config>,
+) -> Result<HttpResponse, Error> {
+    if !config.webdav.enabled {
+        return Ok(HttpResponse::NotFound().body("WebDAV service is disabled"));
+    }
+
+    // 添加基本认证检查
+    if let Some(auth) = req.headers().get(header::AUTHORIZATION) {
+        let auth_str = auth.to_str().map_err(|_| {
+            actix_web::error::ErrorUnauthorized("Invalid authorization header")
+        })?;
+
+        if auth_str.starts_with("Basic ") {
+            let credentials = BASE64.decode(&auth_str[6..]).map_err(|_| {
+                actix_web::error::ErrorUnauthorized("Invalid base64 in authorization")
+            })?;
+
+            let credentials_str = String::from_utf8(credentials).map_err(|_| {
+                actix_web::error::ErrorUnauthorized("Invalid UTF-8 in authorization")
+            })?;
+
+            let parts: Vec<&str> = credentials_str.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let username = parts[0];
+                let password = parts[1];
+
+                if let Some(user_config) = config.webdav.users.get(username) {
+                    if user_config.password != password {
+                        return Ok(HttpResponse::Unauthorized()
+                            .append_header((header::WWW_AUTHENTICATE, "Basic realm=\"WebDAV Server\""))
+                            .body("Invalid password"));
+                    }
+
+                    // 检查权限
+                    let method = req.method();
+                    let need_write = matches!(method.as_str(), 
+                        "PUT" | "DELETE" | "MKCOL" | "COPY" | "MOVE"
+                    );
+
+                    if need_write && !user_config.permissions.contains('w') {
+                        return Ok(HttpResponse::Forbidden().body("Write permission required"));
+                    }
+
+                    if !user_config.permissions.contains('r') {
+                        return Ok(HttpResponse::Forbidden().body("Read permission required"));
+                    }
+                } else {
+                    return Ok(HttpResponse::Unauthorized()
+                        .append_header((header::WWW_AUTHENTICATE, "Basic realm=\"WebDAV Server\""))
+                        .body("Invalid username"));
+                }
+            }
+        }
+    } else {
+        return Ok(HttpResponse::Unauthorized()
+            .append_header((header::WWW_AUTHENTICATE, "Basic realm=\"WebDAV Server\""))
+            .finish());
+    }
+
+    // 确保基础目录存在
+    let base = PathBuf::from(&config.cwd);
+    if !base.exists() {
+        fs::create_dir_all(&base)?;
+    }
+
+    let handler = DavHandler::builder()
+        .filesystem(LocalFs::new(&base, true, true, false))
+        .strip_prefix("/webdav")
+        .autoindex(true)
+        .build_handler();
+
+    let uri = req.uri().to_string();
+    let mut dav_req = hyper::Request::builder()
+        .method(req.method().clone())
+        .uri(uri)
+        .version(req.version());
+
+    for (name, value) in req.headers() {
+        dav_req = dav_req.header(name, value);
+    }
+
+    let body = if req.method() == hyper::Method::PUT {
+        let (tx, body) = hyper::Body::channel();
+        let mut tx = Some(tx);
+        
+        actix_web::rt::spawn(async move {
+            while let Some(chunk) = payload.next().await {
+                if let Ok(chunk) = chunk {
+                    if let Some(tx) = tx.as_mut() {
+                        if tx.send_data(chunk.into()).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        body
+    } else {
+        hyper::Body::empty()
+    };
+
+    let dav_req = dav_req.body(body)
+        .unwrap_or_else(|_| hyper::Request::new(hyper::Body::empty()));
+
+    let dav_resp = handler.handle(dav_req).await;
+    let (parts, body) = dav_resp.into_parts();
+    let mut builder = HttpResponse::build(parts.status);
+    
+    for (name, value) in parts.headers {
+        if let Some(name) = name {
+            builder.append_header((name, value));
+        }
+    }
+    
+    Ok(builder.streaming(body))
 }
 
 const TEMPLATE: &str = r#"
@@ -511,18 +701,15 @@ fn print_version() {
 
 fn print_help() {
     println!("云溪起源网盘 v{}", VERSION);
-    println!("用法: yunxi-webdisk [选项]");
+    println!("用法: webdisk [选项]");
     println!("\n选项:");
-    println!("  --host ip <地址>       设置IPv4监听地址");
-    println!("  --host ipv6 <地址>     设置IPv6监听地址");
-    println!("  --host port <端口>     设置监听端口");
-    println!("  --host cwd <目录>      设置文件存储目录");
-    println!("  --config <文件路径>    使用指定的配置文件");
-    println!("  --config default       重建默认配置文件");
-    println!("  start                  后台启动服务");
-    println!("  stop                   停止服务");
-    println!("  -h, --help            显示帮助信息");
-    println!("  -v, --version         显示版本信息");
+    println!("  -h, --help     显示帮助信息");
+    println!("  -v, --version  显示版本信息");
+    println!("  --webdav       WebDAV 配置");
+    println!("\nWebDAV 配置:");
+    println!("  --webdav true false          启用或禁用 WebDAV");
+    println!("  --webdav add|del 用户名      添加或删除用户");
+    println!("  --webdav 用户名:rwx 密码     设置权限和密码");
 }
 
 // 修改错误类型
@@ -747,6 +934,22 @@ fn format_error(e: &std::io::Error) -> String {
     }
 }
 
+// 添加随机密码生成函数
+fn generate_random_password() -> String {
+    let mut rng = thread_rng();
+    let password: String = (0..8)
+        .map(|_| {
+            let c = rng.sample(Alphanumeric) as char;
+            if rng.gen_bool(0.5) {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    password
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -862,6 +1065,172 @@ async fn main() -> std::io::Result<()> {
                 // 内部命令，用于实际运行服务
                 write_pid()?;
             }
+            "--webdav" => {
+                let mut config = Config::load()?;
+                match args.get(2).map(|s| s.as_str()) {
+                    Some("true") => {
+                        config.webdav.enabled = true;
+                        println!("WebDAV 已启用");
+                    }
+                    Some("false") => {
+                        config.webdav.enabled = false;
+                        println!("WebDAV 已禁用");
+                    }
+                    Some("add") => {
+                        if let Some(username) = args.get(3) {
+                            // 检查用户名是否包含权限设置
+                            if username.contains(':') {
+                                let parts: Vec<&str> = username.split(':').collect();
+                                let username = parts[0];
+                                let permissions = parts[1];
+                                
+                                // 验证权限字符串
+                                if !permissions.chars().all(|c| "rwx".contains(c)) {
+                                    println!("无效的权限字符串，只能包含 r、w、x");
+                                    return Ok(());
+                                }
+
+                                // 检查用户是否已存在
+                                if !config.webdav.users.contains_key(username) {
+                                    if let Some(password) = args.get(4) {
+                                        // 添加带权限和密码的用户
+                                        config.webdav.users.insert(username.to_string(), UserConfig {
+                                            password: password.to_string(),
+                                            permissions: permissions.to_string(),
+                                        });
+                                        println!("已添加用户:");
+                                        println!("- 用户名: {}", username);
+                                        println!("- 密码: {}", password);
+                                        println!("- 权限: {}", permissions);
+                                    } else {
+                                        // 添加带权限的用户，使用随机密码
+                                        let random_password = generate_random_password();
+                                        config.webdav.users.insert(username.to_string(), UserConfig {
+                                            password: random_password.clone(),
+                                            permissions: permissions.to_string(),
+                                        });
+                                        println!("已添加用户:");
+                                        println!("- 用户名: {}", username);
+                                        println!("- 密码: {}", random_password);
+                                        println!("- 权限: {}", permissions);
+                                    }
+                                } else {
+                                    println!("用户 {} 已存在", username);
+                                }
+                            } else {
+                                // 原有的普通添加用户逻辑，使用随机密码
+                                if !config.webdav.users.contains_key(username) {
+                                    if let Some(password) = args.get(4) {
+                                        config.webdav.users.insert(username.to_string(), UserConfig {
+                                            password: password.to_string(),
+                                            permissions: "r".to_string(),
+                                        });
+                                        println!("已添加用户:");
+                                        println!("- 用户名: {}", username);
+                                        println!("- 密码: {}", password);
+                                        println!("- 权限: r");
+                                    } else {
+                                        let random_password = generate_random_password();
+                                        config.webdav.users.insert(username.to_string(), UserConfig {
+                                            password: random_password.clone(),
+                                            permissions: "r".to_string(),
+                                        });
+                                        println!("已添加用户:");
+                                        println!("- 用户名: {}", username);
+                                        println!("- 密码: {}", random_password);
+                                        println!("- 权限: r");
+                                    }
+                                } else {
+                                    println!("用户 {} 已存在", username);
+                                }
+                            }
+                        } else {
+                            println!("请指定用户名");
+                        }
+                    }
+                    Some("del") => {
+                        if let Some(username) = args.get(3) {
+                            if config.webdav.users.remove(username).is_some() {
+                                println!("已删除用户 {}", username);
+                            } else {
+                                println!("用户 {} 不存在", username);
+                            }
+                        } else {
+                            println!("请指定要删除的用户名");
+                        }
+                    }
+                    Some(arg) => {
+                        if let Some(username) = args.get(2) {
+                            if arg.contains(':') {
+                                // 设置用户权限
+                                let parts: Vec<&str> = arg.split(':').collect();
+                                let username = parts[0];
+                                let permissions = parts[1];
+                                
+                                // 验证权限字符串
+                                if !permissions.chars().all(|c| "rwx".contains(c)) {
+                                    println!("无效的权限字符串，只能包含 r、w、x");
+                                    return Ok(());
+                                }
+
+                                // 检查是否同时设置密码
+                                if let Some(password) = args.get(3) {
+                                    if let Some(user) = config.webdav.users.get_mut(username) {
+                                        user.permissions = permissions.to_string();
+                                        user.password = password.to_string();
+                                        println!("已更新用户 {} 的权限为 {} 和密码", username, permissions);
+                                    } else {
+                                        // 如果用户不存在，创建新用户
+                                        config.webdav.users.insert(username.to_string(), UserConfig {
+                                            password: password.to_string(),
+                                            permissions: permissions.to_string(),
+                                        });
+                                        println!("已创建用户 {}，设置权限为 {} 和密码", username, permissions);
+                                    }
+                                } else {
+                                    // 只更新权限
+                                    if let Some(user) = config.webdav.users.get_mut(username) {
+                                        user.permissions = permissions.to_string();
+                                        println!("已更新用户 {} 的权限为 {}", username, permissions);
+                                    } else {
+                                        println!("用户 {} 不存在", username);
+                                    }
+                                }
+                            } else if let Some(password) = args.get(3) {
+                                // 只设置密码
+                                if let Some(user) = config.webdav.users.get_mut(username) {
+                                    user.password = password.to_string();
+                                    println!("已更新用户 {} 的密码", username);
+                                } else {
+                                    println!("用户 {} 不存在", username);
+                                }
+                            } else {
+                                println!("无效的 WebDAV 命令");
+                            }
+                        } else {
+                            println!("请指定用户名");
+                        }
+                    }
+                    None => {
+                        println!("WebDAV 状态: {}", if config.webdav.enabled { "已启用" } else { "已禁用" });
+                        if !config.webdav.users.is_empty() {
+                            println!("\n用户列表:");
+                            for (username, user) in &config.webdav.users {
+                                println!("- {}", username);
+                                println!("  密码: {}", user.password);
+                                println!("  权限: {}", user.permissions);
+                            }
+                        } else {
+                            println!("未配置任何用户");
+                        }
+                    }
+                }
+                // 保存配置
+                let yaml_str = serde_yaml::to_string(&config)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                fs::write("data/config.yaml", yaml_str)?;
+                return Ok(());
+            }
             _ => {
                 println!("未知命令，使用 -h 或 --help 查看帮助");
                 return Ok(());
@@ -898,17 +1267,40 @@ async fn main() -> std::io::Result<()> {
         };
         println!("- IPv6: http://{}:{}", display_ipv6, config.port);
     }
-    println!("- 目录: {}\n", config.cwd);
-    
-    println!("服务启动中...");
+    println!("- 目录: {}", config.cwd);
+
+    // 添加 WebDAV 信息输出
+    println!("\nWebDAV 信息:");
+    println!("- 状态: {}", if config.webdav.enabled { "已启用" } else { "已禁用" });
+    if config.webdav.enabled {
+        if config.webdav.users.is_empty() {
+            println!("- 用户: 未配置任何用户");
+        } else {
+            println!("- 已配置用户列表:");
+            for (username, user_config) in &config.webdav.users {
+                println!("  用户名: {}", username);
+                println!("  密码: {}", user_config.password);
+                println!("  权限: {}", user_config.permissions);
+                println!();
+            }
+        }
+    }
+
+    println!("\n服务启动中...");
     
     let app_factory = {
         let config = config.clone();
         move || {
-            App::new()
+            let mut app = App::new()
                 .wrap(Compress::default())
                 .app_data(web::Data::new(config.clone()))
-                .service(index)
+                .service(index);
+            
+            if config.webdav.enabled {
+                app = app.service(webdav_handler);
+            }
+            
+            app
         }
     };
     

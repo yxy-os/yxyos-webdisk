@@ -14,6 +14,7 @@
 - 📱 响应式设计：支持移动端访问
 - 🔧 简单配置：通过 YAML 文件轻松配置
 - 🗜️ 压缩传输：支持 HTTP 压缩
+- 📂 WebDAV：支持 WebDAV 协议，可挂载为网络驱动器
 
 ## 快速开始
 
@@ -33,14 +34,85 @@
 ```yaml
 # 云溪起源网盘配置文件
 ip: "0.0.0.0"    # 监听的 IP 地址
-ipv6: '::'`
+ipv6: '::'       # IPv6 地址
 port: 8080       # 监听的端口
 cwd: "data/www"  # 文件存储目录
+
+# WebDAV 配置
+webdav:
+  enabled: true  # 是否启用 WebDAV
+  users:         # WebDAV 用户配置
+    admin:       # 用户名
+      password: "admin"     # 密码
+      permissions: "rwx"    # 权限：r=读取，w=写入，x=执行
+```
+
+### WebDAV 使用说明
+
+#### 1. 配置 WebDAV
+
+在 `config.yaml` 中启用 WebDAV 并配置用户：
+
+```yaml
+webdav:
+  enabled: true
+  users:
+    admin:
+      password: "your_password"
+      permissions: "rwx"    # 完全访问权限
+    readonly:
+      password: "read123"
+      permissions: "r"      # 只读权限
+```
+
+#### 2. API 调用
+
+WebDAV 支持以下 HTTP 方法：
+
+- `PROPFIND`: 获取文件/目录信息
+- `GET`: 下载文件
+- `PUT`: 上传文件
+- `DELETE`: 删除文件
+- `MKCOL`: 创建目录
+- `COPY`: 复制文件
+- `MOVE`: 移动文件
+
+示例：
+```bash
+# 列出目录内容
+curl -X PROPFIND -u admin:password http://localhost:8080/webdav/
+
+# 上传文件
+curl -T file.txt -u admin:password http://localhost:8080/webdav/file.txt
+
+# 下载文件
+curl -u admin:password http://localhost:8080/webdav/file.txt
+
+# 创建目录
+curl -X MKCOL -u admin:password http://localhost:8080/webdav/newdir
+
+# 删除文件
+curl -X DELETE -u admin:password http://localhost:8080/webdav/file.txt
 ```
 
 ### 命令行参数
 
-- `-v` 或 `--version`: 显示版本信息
+- `-h, --help`: 显示帮助信息
+- `-v, --version`: 显示版本信息
+- `--host`: 修改服务器配置
+  - `--host ip <地址>`: 设置 IPv4 监听地址
+  - `--host ipv6 <地址>`: 设置 IPv6 监听地址
+  - `--host port <端口>`: 设置监听端口
+  - `--host cwd <目录>`: 设置文件存储目录
+- `--config`: 配置文件操作
+  - `--config default`: 重建默认配置文件
+  - `--config <文件路径>`: 使用指定的配置文件
+- `start`: 后台启动服务
+- `stop`: 停止服务
+- `--webdav`: WebDAV 配置
+  - `--webdav true|false`: 启用或禁用 WebDAV
+  - `--webdav add|del 用户名`: 添加或删除用户
+  - `--webdav 用户名:rwx 密码`: 设置用户权限和密码
 
 ## 支持的文件预览
 
