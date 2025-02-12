@@ -224,6 +224,12 @@ async fn get_directory_entries(path: &Path) -> Vec<FileEntry> {
         for entry in read_dir.flatten() {
             if let Ok(metadata) = entry.metadata() {
                 let name = entry.file_name().to_string_lossy().to_string();
+                
+                // 跳过 favicon.ico 文件的显示
+                if name == "favicon.ico" {
+                    continue;
+                }
+                
                 let size = metadata.len();
                 
                 // 检查是否为软链接
